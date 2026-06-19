@@ -15,6 +15,10 @@ public final class SoundPlayer {
     private static final double MAX_MULTIPLIER = 1.7;
     private static final AudioFormat FORMAT = new AudioFormat(SAMPLE_RATE, 16, 1, true, false);
 
+    private static final double[] BELL_PARTIALS = {1.0, 2.0, 3.0, 4.2};
+    private static final double[] BELL_AMPS     = {1.0, 0.6, 0.35, 0.18};
+    private static final double[] BELL_DECAYS   = {3.0, 5.5, 8.0, 11.0};
+
     private volatile double volumeMultiplier = MAX_MULTIPLIER;
 
     public void setVolumePercent(int percent) {
@@ -22,32 +26,26 @@ public final class SoundPlayer {
         this.volumeMultiplier = (clamped / 100.0) * MAX_MULTIPLIER;
     }
 
+    public void playStart() {
+        play(bell(880.0, 450, 0.45));
+    }
+
     public void playSuccess() {
-        playTones(new Tone(523.25, 120, 0.35), new Tone(659.25, 200, 0.40));
+        play(arpeggio(new double[]{523.25, 659.25, 783.99, 1046.50}, 80, 600));
     }
 
     public void playFailure() {
-        playTones(new Tone(440.00, 150, 0.45),
-                  new Tone(329.63, 150, 0.45),
-                  new Tone(220.00, 300, 0.50));
+        play(arpeggio(new double[]{587.33, 440.00, 349.23, 293.66}, 100, 700));
     }
 
-    public void playStart() {
-        playTones(new Tone(440.00, 80, 0.25));
-    }
-
-    private record Tone(double freqHz, int durMs, double volume) {}
-
-    private void playTones(Tone... tones) {
+    private void play(double[] samples) {
         double multiplier = volumeMultiplier;
         if (multiplier <= 0.0) return;
+        byte[] buf = toPcm16(samples, multiplier);
         try (SourceDataLine line = AudioSystem.getSourceDataLine(FORMAT)) {
             line.open(FORMAT);
             line.start();
-            for (Tone t : tones) {
-                byte[] buf = synth(t, multiplier);
-                line.write(buf, 0, buf.length);
-            }
+            line.write(buf, 0, buf.length);
             line.drain();
         } catch (LineUnavailableException e) {
             LOG.log(Level.WARNING, "Аудио-линия недоступна: %s".formatted(e.getMessage()));
@@ -56,24 +54,59 @@ public final class SoundPlayer {
         }
     }
 
-    private static byte[] synth(Tone t, double multiplier) {
-        int samples = (int) (SAMPLE_RATE * t.durMs / 1000.0);
-        byte[] out = new byte[samples * 2];
-        int fadeSamples = Math.min(samples / 8, SAMPLE_RATE / 100);
-        double effectiveVolume = Math.min(1.0, t.volume * multiplier);
-        for (int i = 0; i < samples; i++) {
-            double env = envelope(i, samples, fadeSamples);
-            double s = Math.sin(2 * Math.PI * t.freqHz * i / SAMPLE_RATE);
-            int v = (int) (s * env * effectiveVolume * Short.MAX_VALUE);
-            out[i * 2] = (byte) (v & 0xff);
-            out[i * 2 + 1] = (byte) ((v >> 8) & 0xff);
+    private static double[] arpeggio(double[] freqs, int staggerMs, int noteDecayMs) {
+        int totalMs = staggerMs * (freqs.length - 1) + noteDecayMs + 50;
+        double[] mix = new double[msToSamples(totalMs)];
+        for (int i = 0; i < freqs.length; i++) {
+            double[] note = bell(freqs[i], noteDecayMs, 0.35);
+            int offset = msToSamples(staggerMs * i);
+            for (int j = 0; j < note.length && offset + j < mix.length; j++) {
+                mix[offset + j] += note[j];
+            }
         }
+        normalize(mix, 0.85);
+        return mix;
+    }
+
+    private static double[] bell(double freqHz, int durMs, double amp) {
+        int n = msToSamples(durMs);
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            double t = i / (double) SAMPLE_RATE;
+            double s = 0;
+            for (int p = 0; p < BELL_PARTIALS.length; p++) {
+                double f = freqHz * BELL_PARTIALS[p];
+                s += BELL_AMPS[p] * Math.sin(2 * Math.PI * f * t) * Math.exp(-BELL_DECAYS[p] * t);
+            }
+            out[i] = s * amp;
+        }
+        int fadeIn = msToSamples(2);
+        for (int i = 0; i < fadeIn; i++) out[i] *= i / (double) fadeIn;
         return out;
     }
 
-    private static double envelope(int i, int samples, int fadeSamples) {
-        if (i < fadeSamples) return i / (double) fadeSamples;
-        if (i > samples - fadeSamples) return (samples - i) / (double) fadeSamples;
-        return 1.0;
+    private static int msToSamples(int ms) {
+        return (int) (SAMPLE_RATE * ms / 1000.0);
+    }
+
+    private static void normalize(double[] s, double target) {
+        double max = 0;
+        for (double v : s) max = Math.max(max, Math.abs(v));
+        if (max <= 0) return;
+        double k = target / max;
+        for (int i = 0; i < s.length; i++) s[i] *= k;
+    }
+
+    private static byte[] toPcm16(double[] samples, double multiplier) {
+        byte[] out = new byte[samples.length * 2];
+        for (int i = 0; i < samples.length; i++) {
+            double v = samples[i] * multiplier;
+            if (v > 1.0) v = 1.0;
+            else if (v < -1.0) v = -1.0;
+            int iv = (int) (v * Short.MAX_VALUE);
+            out[i * 2]     = (byte) (iv & 0xff);
+            out[i * 2 + 1] = (byte) ((iv >> 8) & 0xff);
+        }
+        return out;
     }
 }

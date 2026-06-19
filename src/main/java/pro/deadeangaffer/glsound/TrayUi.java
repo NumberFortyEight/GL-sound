@@ -3,6 +3,7 @@ package pro.deadeangaffer.glsound;
 import java.awt.AWTException;
 import java.awt.Color;
 import java.awt.Desktop;
+import java.awt.EventQueue;
 import java.awt.Graphics2D;
 import java.awt.MenuItem;
 import java.awt.PopupMenu;
@@ -79,17 +80,19 @@ public final class TrayUi {
     public void onOpenSettings(Runnable listener) { this.settingsListener = listener; }
 
     public void setState(State s, String tooltip) {
-        trayIcon.setImage(icons.get(s));
-        trayIcon.setToolTip("GL-Sound: " + tooltip);
+        runOnEdt(() -> {
+            trayIcon.setImage(icons.get(s));
+            trayIcon.setToolTip("GL-Sound: " + tooltip);
+        });
     }
 
     public void setLastPipeline(String url) {
         this.lastPipelineUrl = url;
-        lastPipelineItem.setEnabled(url != null && !url.isBlank());
+        runOnEdt(() -> lastPipelineItem.setEnabled(url != null && !url.isBlank()));
     }
 
     public void notify(String title, String message, TrayIcon.MessageType type) {
-        trayIcon.displayMessage(title, message, type);
+        runOnEdt(() -> trayIcon.displayMessage(title, message, type));
     }
 
     public boolean isPaused() { return paused; }
@@ -99,6 +102,14 @@ public final class TrayUi {
         pauseItem.setLabel(paused ? "Продолжить" : "Пауза");
         if (paused) setState(State.PAUSED, "пауза");
         pauseListener.accept(paused);
+    }
+
+    private static void runOnEdt(Runnable r) {
+        if (EventQueue.isDispatchThread()) {
+            r.run();
+        } else {
+            EventQueue.invokeLater(r);
+        }
     }
 
     private static Color colorFor(State s) {

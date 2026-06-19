@@ -10,8 +10,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 public final class GitLabClient {
@@ -21,18 +19,15 @@ public final class GitLabClient {
     private final String encodedProject;
     private final String token;
 
-    public GitLabClient(String baseUrl, String projectPath, String token) {
+    public GitLabClient(HttpClient http, String baseUrl, String projectPath, String token) {
+        this.http = http;
         this.baseUrl = baseUrl;
         this.encodedProject = URLEncoder.encode(projectPath, StandardCharsets.UTF_8);
         this.token = token;
-        this.http = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_2)
-                .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
     }
 
-    public Optional<PipelineInfo> latestPipeline(String ref, String previousEtag) throws IOException, InterruptedException {
+    public Optional<PipelineInfo> latestPipeline(String ref, String previousEtag)
+            throws IOException, InterruptedException {
         var url = "%s/api/v4/projects/%s/pipelines?per_page=1&ref=%s"
                 .formatted(baseUrl, encodedProject,
                         URLEncoder.encode(ref, StandardCharsets.UTF_8));
@@ -52,21 +47,42 @@ public final class GitLabClient {
         if (code == 401 || code == 403) {
             throw new IOException("Auth error " + code + ": проверь PAT (scope read_api)");
         }
+        if (code == 404) {
+            throw new IOException("GitLab 404: проект '" + decodedProjectForMessage() + "' или ветка '" + ref + "' не найдены");
+        }
         if (code >= 400) {
             throw new IOException("GitLab HTTP " + code + ": " + truncate(resp.body()));
         }
 
         var etag = resp.headers().firstValue("etag").orElse(null);
-        List<Object> arr = JSON.std.listFrom(resp.body());
-        if (arr.isEmpty()) return Optional.empty();
+        Object parsed = JSON.std.anyFrom(resp.body());
+        if (!(parsed instanceof java.util.List<?> arr) || arr.isEmpty()) {
+            return Optional.empty();
+        }
+        if (!(arr.getFirst() instanceof java.util.Map<?, ?> p)) {
+            throw new IOException("GitLab JSON: ожидался объект pipeline, получено " + arr.getFirst());
+        }
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> p = (Map<String, Object>) arr.getFirst();
-        long id = ((Number) p.get("id")).longValue();
-        var status = String.valueOf(p.getOrDefault("status", "unknown"));
-        var resolvedRef = String.valueOf(p.getOrDefault("ref", ref));
-        var webUrl = String.valueOf(p.getOrDefault("web_url", ""));
+        long id = readLong(p, "id");
+        var status = readString(p, "status", "unknown");
+        var resolvedRef = readString(p, "ref", ref);
+        var webUrl = readString(p, "web_url", "");
         return Optional.of(new PipelineInfo(id, status, resolvedRef, webUrl, etag));
+    }
+
+    private String decodedProjectForMessage() {
+        return java.net.URLDecoder.decode(encodedProject, StandardCharsets.UTF_8);
+    }
+
+    private static long readLong(java.util.Map<?, ?> p, String key) throws IOException {
+        var v = p.get(key);
+        if (v instanceof Number n) return n.longValue();
+        throw new IOException("GitLab JSON: поле '" + key + "' отсутствует или не число (" + v + ")");
+    }
+
+    private static String readString(java.util.Map<?, ?> p, String key, String fallback) {
+        var v = p.get(key);
+        return v == null ? fallback : v.toString();
     }
 
     private static String truncate(String s) {

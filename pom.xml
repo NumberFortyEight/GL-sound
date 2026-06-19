@@ -14,7 +14,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <jackson.version>2.18.2</jackson.version>
+        <main.module>pro.deadeangaffer.glsound</main.module>
         <main.class>pro.deadeangaffer.glsound.App</main.class>
+        <jpackage.input>${project.build.directory}/jpackage-input</jpackage.input>
+        <jpackage.dest>${project.build.directory}/dist</jpackage.dest>
     </properties>
 
     <dependencies>
@@ -39,34 +42,95 @@
 
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.0</version>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultEntries>false</addDefaultEntries>
+                        </manifest>
+                        <manifestEntries>
+                            <Implementation-Title>${project.name}</Implementation-Title>
+                            <Implementation-Version>${project.version}</Implementation-Version>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.0</version>
                 <executions>
                     <execution>
+                        <id>collect-jpackage-input</id>
                         <phase>package</phase>
-                        <goals><goal>shade</goal></goals>
+                        <goals><goal>copy-dependencies</goal></goals>
                         <configuration>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <minimizeJar>false</minimizeJar>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <manifestEntries>
-                                        <Main-Class>${main.class}</Main-Class>
-                                        <Implementation-Title>${project.name}</Implementation-Title>
-                                        <Implementation-Version>${project.version}</Implementation-Version>
-                                    </manifestEntries>
-                                </transformer>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
+                            <outputDirectory>${jpackage.input}</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                            <overWriteIfNewer>true</overWriteIfNewer>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-app-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <copy file="${project.build.directory}/${project.build.finalName}.jar"
+                                      todir="${jpackage.input}"/>
+                                <delete dir="${jpackage.dest}"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.panteleyev</groupId>
+                <artifactId>jpackage-maven-plugin</artifactId>
+                <version>1.6.5</version>
+                <executions>
+                    <execution>
+                        <id>jpackage</id>
+                        <phase>package</phase>
+                        <goals><goal>jpackage</goal></goals>
+                        <configuration>
+                            <name>GL-Sound</name>
+                            <appVersion>${project.version}</appVersion>
+                            <vendor>DeadeanGaffer</vendor>
+                            <description>Sound monitor for GitLab pipelines</description>
+                            <destination>${jpackage.dest}</destination>
+                            <type>APP_IMAGE</type>
+                            <modulePaths>
+                                <modulePath>${jpackage.input}</modulePath>
+                            </modulePaths>
+                            <module>${main.module}/${main.class}</module>
+                            <addModules>
+                                <addModule>java.desktop</addModule>
+                                <addModule>java.net.http</addModule>
+                                <addModule>java.logging</addModule>
+                            </addModules>
+                            <jLinkOptions>
+                                <jLinkOption>--compress=zip-6</jLinkOption>
+                            </jLinkOptions>
+                            <javaOptions>
+                                <javaOption>-Dfile.encoding=UTF-8</javaOption>
+                                <javaOption>--enable-native-access=${main.module}</javaOption>
+                                <javaOption>-Xms32m</javaOption>
+                                <javaOption>-Xmx128m</javaOption>
+                                <javaOption>-XX:+UseSerialGC</javaOption>
+                                <javaOption>-XX:+HeapDumpOnOutOfMemoryError</javaOption>
+                            </javaOptions>
                         </configuration>
                     </execution>
                 </executions>

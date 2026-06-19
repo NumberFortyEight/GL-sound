@@ -2,8 +2,9 @@ package pro.deadeangaffer.glsound;
 
 import java.awt.TrayIcon;
 import java.io.IOException;
-import java.io.OutputStream;
+import java.net.http.HttpClient;
 import java.nio.file.Files;
+import java.time.Duration;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -11,9 +12,10 @@ import java.util.logging.SimpleFormatter;
 
 public final class App {
 
-    private static final Logger LOG = Logger.getLogger("gl-sound");
+    private static final Logger LOG = Logger.getLogger(App.class.getName());
     private static final SoundPlayer SOUND = new SoundPlayer();
 
+    private static HttpClient http;
     private static Config cfg;
     private static TrayUi ui;
     private static volatile PipelineWatcher watcher;
@@ -21,23 +23,36 @@ public final class App {
     public static void main(String[] args) throws Exception {
         configureLogging();
 
+        http = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+
         cfg = new Config(Config.defaultPath());
         cfg.loadOrCreate();
+        SOUND.setVolumePercent(cfg.volumePercent());
 
         ui = new TrayUi(cfg.file(), App::pipelinesUrl);
-        ui.onOpenSettings(() -> SettingsDialog.open(cfg, App::onConfigApplied));
+        ui.onOpenSettings(() -> SettingsDialog.open(cfg, http, App::onConfigApplied));
+        SplashOverlay.show("GL-Sound запущен — иконка в трее");
+        Thread.startVirtualThread(SOUND::playStart);
+        ui.notify("GL-Sound запущен",
+                "Иконка добавлена в системный трей. Правый клик — меню.",
+                TrayIcon.MessageType.INFO);
 
         startWatcherFromConfig();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             var w = watcher;
             if (w != null) w.close();
+            if (http != null) http.close();
         }, "shutdown"));
 
         Thread.currentThread().join();
     }
 
-    private static synchronized void onConfigApplied(Config newCfg) {
+    private static void onConfigApplied() {
         startWatcherFromConfig();
     }
 
@@ -49,6 +64,8 @@ public final class App {
     }
 
     private static synchronized void startWatcherFromConfig() {
+        SOUND.setVolumePercent(cfg.volumePercent());
+
         var old = watcher;
         if (old != null) {
             old.close();
@@ -63,12 +80,12 @@ public final class App {
             return;
         }
 
-        var client  = new GitLabClient(cfg.baseUrl(), cfg.projectPath(), cfg.token());
-        var fresh   = new PipelineWatcher(client, cfg.refs(), cfg.intervalSeconds(), SOUND, ui);
+        var client = new GitLabClient(http, cfg.baseUrl(), cfg.projectPath(), cfg.token());
+        var fresh  = new PipelineWatcher(client, cfg.refs(), cfg.intervalSeconds(), SOUND, ui);
 
         ui.onPauseToggle(fresh::setPaused);
         ui.setState(TrayUi.State.IDLE, "опрос " + cfg.intervalSeconds() + "с");
-        ui.notify("GL-Sound запущен",
+        ui.notify("Мониторинг настроен",
                 "%s — каждые %dс, ветки: %s".formatted(
                         cfg.projectPath(),
                         cfg.intervalSeconds(),
@@ -88,11 +105,8 @@ public final class App {
             Logger root = Logger.getLogger("");
             root.addHandler(fh);
             root.setLevel(Level.INFO);
-        } catch (IOException ignored) {
-        }
-        try {
-            System.setErr(new java.io.PrintStream(OutputStream.nullOutputStream()));
-        } catch (Exception ignored) {
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Не удалось настроить файловый лог: " + e.getMessage());
         }
     }
 }

@@ -27,18 +27,24 @@ import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.util.Arrays;
-import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 public final class SettingsDialog extends JFrame {
 
+    private static final Pattern PROJECT_PATH_RX =
+            Pattern.compile("^[A-Za-z0-9._][A-Za-z0-9._\\-/]{0,254}$");
+
     private final Config cfg;
-    private final Consumer<Config> onApply;
+    private final HttpClient http;
+    private final Runnable onApply;
 
     private final JTextField baseUrlField   = new JTextField();
     private final JTextField projectField   = new JTextField();
     private final JTextField refsField      = new JTextField();
     private final JSpinner   intervalSpin   = new JSpinner(new SpinnerNumberModel(6, 2, 3600, 1));
+    private final VolumeKnob volumeKnob     = new VolumeKnob(70);
     private final JPasswordField tokenField = new JPasswordField();
     private final JCheckBox  showToken      = new JCheckBox("Показать токен");
 
@@ -46,9 +52,10 @@ public final class SettingsDialog extends JFrame {
     private final JLabel autostartLbl  = mutedLabel("…");
     private final JButton autostartBtn = new JButton("…");
 
-    public SettingsDialog(Config cfg, Consumer<Config> onApply) {
+    public SettingsDialog(Config cfg, HttpClient http, Runnable onApply) {
         super("GL-Sound — Настройки");
         this.cfg = cfg;
+        this.http = http;
         this.onApply = onApply;
         try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); }
         catch (Exception ignored) {}
@@ -99,7 +106,8 @@ public final class SettingsDialog extends JFrame {
                 "&nbsp;1. Нажми <b>Открыть страницу создания токена</b><br>" +
                 "&nbsp;2. <b>Token name</b> — любое<br>" +
                 "&nbsp;3. <b>Scopes</b> — ТОЛЬКО <b>read_api</b><br>" +
-                "&nbsp;4. Жми <b>Create</b>, скопируй токен (показывается один раз!) и вставь сюда."));
+                "&nbsp;4. Жми <b>Create</b>, скопируй токен (показывается один раз!) и вставь сюда.<br>" +
+                "Токен шифруется Windows DPAPI в %APPDATA%\\GL-Sound\\config.properties."));
 
         var testRow = horizontalRow();
         var testBtn = new JButton("Проверить подключение");
@@ -120,6 +128,18 @@ public final class SettingsDialog extends JFrame {
         autoRow.add(Box.createHorizontalGlue());
         content.add(Box.createRigidArea(new Dimension(0, 12)));
         content.add(autoRow);
+
+        var knobSection = new JPanel();
+        knobSection.setLayout(new BoxLayout(knobSection, BoxLayout.Y_AXIS));
+        knobSection.setAlignmentX(Component.LEFT_ALIGNMENT);
+        var knobTitle = new JLabel("Громкость уведомлений");
+        knobTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
+        knobTitle.setFont(knobTitle.getFont().deriveFont(Font.BOLD));
+        knobSection.add(knobTitle);
+        knobSection.add(Box.createRigidArea(new Dimension(0, 6)));
+        volumeKnob.setAlignmentX(Component.CENTER_ALIGNMENT);
+        knobSection.add(volumeKnob);
+        content.add(knobSection);
 
         content.add(Box.createVerticalGlue());
 
@@ -146,24 +166,40 @@ public final class SettingsDialog extends JFrame {
         projectField.setText(cfg.projectPath());
         refsField.setText(String.join(",", cfg.refs()));
         intervalSpin.setValue(cfg.intervalSeconds());
+        volumeKnob.setValue(cfg.volumePercent());
         tokenField.setText(cfg.token());
         refreshAutostart();
 
-        setSize(560, 540);
+        setSize(640, 820);
         setLocationRelativeTo(null);
-        setAlwaysOnTop(true);
-        toFront();
-        requestFocus();
     }
 
     private void save() {
+        var baseUrl = baseUrlField.getText().trim().replaceAll("/+$", "");
+        var projectPath = projectField.getText().trim();
+        var token = sanitizeToken(tokenField.getPassword());
+        var refs = refsField.getText().trim();
         var newInterval = (Integer) intervalSpin.getValue();
-        cfg.update(
-                baseUrlField.getText().trim().replaceAll("/+$", ""),
-                projectField.getText().trim(),
-                new String(tokenField.getPassword()).trim(),
-                refsField.getText().trim(),
-                newInterval);
+        var newVolume = volumeKnob.getValue();
+
+        if (!baseUrl.isEmpty() && !baseUrl.toLowerCase().startsWith("https://")) {
+            int choice = JOptionPane.showConfirmDialog(this,
+                    "URL не использует HTTPS — токен будет уходить по открытому каналу.\n"
+                            + "Сохранить всё равно?",
+                    "Внимание: незащищённое соединение",
+                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (choice != JOptionPane.YES_OPTION) return;
+        }
+
+        if (!projectPath.isEmpty() && !PROJECT_PATH_RX.matcher(projectPath).matches()) {
+            JOptionPane.showMessageDialog(this,
+                    "Путь к проекту содержит недопустимые символы.\n"
+                            + "Разрешены: латиница, цифры, точка, подчёркивание, дефис и слэш.",
+                    "Некорректный путь", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        cfg.update(baseUrl, projectPath, token, refs, newInterval, newVolume);
         try {
             cfg.save();
         } catch (Exception ex) {
@@ -172,19 +208,19 @@ public final class SettingsDialog extends JFrame {
                     "Ошибка", JOptionPane.ERROR_MESSAGE);
             return;
         }
-        onApply.accept(cfg);
+        onApply.run();
         dispose();
     }
 
     private void runTest(JButton btn) {
         var url = baseUrlField.getText().trim().replaceAll("/+$", "");
         var path = projectField.getText().trim();
-        var token = new String(tokenField.getPassword()).trim();
+        var token = sanitizeToken(tokenField.getPassword());
         var refs = Arrays.stream(refsField.getText().split(","))
                 .map(String::trim).filter(s -> !s.isEmpty()).toList();
 
-        if (token.isEmpty()) { testStatus.setText("введи токен"); testStatus.setForeground(new Color(0xc62828)); return; }
-        if (refs.isEmpty())  { testStatus.setText("введи хотя бы одну ветку"); testStatus.setForeground(new Color(0xc62828)); return; }
+        if (token.isEmpty()) { setStatusError("введи токен"); return; }
+        if (refs.isEmpty())  { setStatusError("введи хотя бы одну ветку"); return; }
 
         btn.setEnabled(false);
         testStatus.setText("проверяю...");
@@ -193,7 +229,7 @@ public final class SettingsDialog extends JFrame {
         new SwingWorker<String, Void>() {
             @Override protected String doInBackground() {
                 try {
-                    var c = new GitLabClient(url, path, token);
+                    var c = new GitLabClient(http, url, path, token);
                     var firstRef = refs.getFirst();
                     var maybe = c.latestPipeline(firstRef, null);
                     if (maybe.isEmpty()) {
@@ -201,6 +237,9 @@ public final class SettingsDialog extends JFrame {
                     }
                     var p = maybe.get();
                     return "OK: #" + p.id() + " status=" + p.status() + " ref=" + p.ref();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return "Ошибка: проверка прервана";
                 } catch (Exception ex) {
                     return "Ошибка: " + ex.getMessage();
                 }
@@ -233,34 +272,77 @@ public final class SettingsDialog extends JFrame {
     }
 
     private void toggleAutostart() {
-        var installed = Autostart.isInstalled();
-        try {
-            if (installed) {
-                Autostart.uninstall();
-            } else {
-                var exe = Autostart.currentExecutable().orElseThrow(
-                        () -> new IllegalStateException("Не могу определить путь к exe текущего процесса"));
-                Autostart.install(exe);
+        autostartBtn.setEnabled(false);
+        autostartLbl.setText("…");
+        autostartLbl.setForeground(new Color(0x666666));
+
+        new SwingWorker<Boolean, Void>() {
+            private Exception error;
+
+            @Override protected Boolean doInBackground() {
+                try {
+                    var installed = Autostart.isInstalled();
+                    if (installed) {
+                        Autostart.uninstall();
+                        return false;
+                    }
+                    var exe = Autostart.currentExecutable().orElseThrow(
+                            () -> new IllegalStateException("Не могу определить путь к exe текущего процесса"));
+                    Autostart.install(exe);
+                    return true;
+                } catch (Exception ex) {
+                    error = ex;
+                    return null;
+                }
             }
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this,
-                    "Не удалось изменить автозапуск:\n" + ex.getMessage(),
-                    "Ошибка", JOptionPane.ERROR_MESSAGE);
-        }
-        refreshAutostart();
+
+            @Override protected void done() {
+                try {
+                    if (error != null) {
+                        JOptionPane.showMessageDialog(SettingsDialog.this,
+                                "Не удалось изменить автозапуск:\n" + error.getMessage(),
+                                "Ошибка", JOptionPane.ERROR_MESSAGE);
+                    }
+                } finally {
+                    autostartBtn.setEnabled(true);
+                    refreshAutostart();
+                }
+            }
+        }.execute();
     }
 
     private void refreshAutostart() {
-        var on = Autostart.isInstalled();
-        if (on) {
-            autostartLbl.setText("включён");
-            autostartLbl.setForeground(new Color(0x2e7d32));
-            autostartBtn.setText("Выключить");
-        } else {
-            autostartLbl.setText("выключен");
-            autostartLbl.setForeground(new Color(0x666666));
-            autostartBtn.setText("Включить");
-        }
+        new SwingWorker<Boolean, Void>() {
+            @Override protected Boolean doInBackground() {
+                return Autostart.isInstalled();
+            }
+            @Override protected void done() {
+                try {
+                    var on = get();
+                    if (on) {
+                        autostartLbl.setText("включён");
+                        autostartLbl.setForeground(new Color(0x2e7d32));
+                        autostartBtn.setText("Выключить");
+                    } else {
+                        autostartLbl.setText("выключен");
+                        autostartLbl.setForeground(new Color(0x666666));
+                        autostartBtn.setText("Включить");
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }.execute();
+    }
+
+    private void setStatusError(String msg) {
+        testStatus.setText(msg);
+        testStatus.setForeground(new Color(0xc62828));
+    }
+
+    private static String sanitizeToken(char[] raw) {
+        if (raw == null) return "";
+        var s = new String(raw).trim();
+        return s.replace("\r", "").replace("\n", "");
     }
 
     private static JPanel horizontalRow() {
@@ -335,7 +417,7 @@ public final class SettingsDialog extends JFrame {
         return new JLabel("<html><body style='width:540px'>" + html + "</body></html>");
     }
 
-    public static void open(Config cfg, Consumer<Config> onApply) {
-        SwingUtilities.invokeLater(() -> new SettingsDialog(cfg, onApply).setVisible(true));
+    public static void open(Config cfg, HttpClient http, Runnable onApply) {
+        SwingUtilities.invokeLater(() -> new SettingsDialog(cfg, http, onApply).setVisible(true));
     }
 }

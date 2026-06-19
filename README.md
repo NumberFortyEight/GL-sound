@@ -6,17 +6,18 @@
 
 ## Сборка
 
-Нужен только JDK 25. Качаешь ZIP с https://jdk.java.net/25/ и распаковываешь в `%USERPROFILE%\.jdks\openjdk-25.x.x` так, чтобы внутри лежал `bin\javac.exe` — туда смотрит билд-скрипт.
+Нужен JDK 25 и Maven 3.9+.
 
-Maven ставить не надо. `build.cmd` сам скачает нужную версию в `%USERPROFILE%\.gl-sound\tools\` при первом запуске (≈10 МБ, один раз).
+- JDK 25: качай с https://jdk.java.net/25/ и пропиши `JAVA_HOME` на корень JDK (внутри должен быть `bin\javac.exe`).
+- Maven: https://maven.apache.org/download.cgi (либо запускай сборку через панель Maven в IntelliJ — там JDK и Maven уже настроены проектом).
 
 Из корня проекта:
 
 ```
-packaging\build.cmd
+mvn -B clean package
 ```
 
-На выходе — `target\dist\GL-Sound\GL-Sound.exe`.
+На выходе — `target\dist\GL-Sound\GL-Sound.exe`. Внутри bundled-runtime ~47 МБ (мини-JRE из `java.desktop`, `java.net.http`, `java.logging`).
 
 ## Запуск
 

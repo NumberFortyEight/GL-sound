@@ -1,10 +1,14 @@
 package pro.deadeangaffer.glsound;
 
 import java.awt.TrayIcon;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,19 +20,21 @@ public final class PipelineWatcher implements AutoCloseable {
     private static final Logger LOG = Logger.getLogger(PipelineWatcher.class.getName());
 
     private record BranchState(long lastId, String lastStatus, String etag) {}
+    private record BranchTick(String ref, TrayUi.State state, String tooltip, boolean errored) {}
 
     private final GitLabClient client;
     private final List<String> refs;
     private final int intervalSec;
     private final SoundPlayer sound;
     private final TrayUi ui;
-    private final ScheduledExecutorService exec =
+    private final ScheduledExecutorService scheduler =
             Executors.newSingleThreadScheduledExecutor(r -> {
                 var t = new Thread(r, "pipeline-watcher");
                 t.setDaemon(true);
                 return t;
             });
-    private final Map<String, BranchState> states = new HashMap<>();
+    private final ExecutorService branchPool = Executors.newVirtualThreadPerTaskExecutor();
+    private final Map<String, BranchState> states = new ConcurrentHashMap<>();
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private int consecutiveErrors = 0;
 
@@ -44,33 +50,40 @@ public final class PipelineWatcher implements AutoCloseable {
     public void setPaused(boolean p) { paused.set(p); }
 
     public void start() {
-        exec.scheduleWithFixedDelay(this::tick, 1, intervalSec, TimeUnit.SECONDS);
+        scheduler.scheduleWithFixedDelay(this::tick, 1, intervalSec, TimeUnit.SECONDS);
     }
 
     private void tick() {
         if (paused.get()) return;
+
+        List<Callable<BranchTick>> tasks = new ArrayList<>(refs.size());
+        for (var ref : refs) tasks.add(() -> pollOne(ref));
+
+        List<Future<BranchTick>> futures;
+        try {
+            futures = branchPool.invokeAll(tasks, Math.max(intervalSec * 2L, 30L), TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+
         boolean anyError = false;
         TrayUi.State worst = TrayUi.State.OK;
         String tooltip = "ok";
-
-        for (var ref : refs) {
+        for (var f : futures) {
             try {
-                var prev = states.get(ref);
-                var maybe = client.latestPipeline(ref, prev == null ? null : prev.etag());
-                if (maybe.isEmpty()) {
-                    if (prev != null) {
-                        worst = worse(worst, mapState(prev.lastStatus()));
-                        tooltip = ref + ": " + prev.lastStatus();
-                    }
-                    continue;
+                var r = f.get();
+                if (r.errored()) anyError = true;
+                if (rank(r.state()) > rank(worst)) {
+                    worst = r.state();
+                    tooltip = r.tooltip();
                 }
-                var p = maybe.get();
-                handleChange(ref, prev, p);
-                worst = worse(worst, mapState(p.status()));
-                tooltip = ref + ": " + p.status();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 anyError = true;
-                LOG.log(Level.WARNING, "Ошибка опроса " + ref + ": " + e.getMessage());
+                LOG.log(Level.WARNING, "Branch task failed", e);
             }
         }
 
@@ -86,6 +99,26 @@ public final class PipelineWatcher implements AutoCloseable {
         }
     }
 
+    private BranchTick pollOne(String ref) {
+        var prev = states.get(ref);
+        try {
+            var maybe = client.latestPipeline(ref, prev == null ? null : prev.etag());
+            if (maybe.isEmpty()) {
+                if (prev != null) return new BranchTick(ref, mapState(prev.lastStatus()), ref + ": " + prev.lastStatus(), false);
+                return new BranchTick(ref, TrayUi.State.IDLE, ref + ": нет данных", false);
+            }
+            var p = maybe.get();
+            handleChange(ref, prev, p);
+            return new BranchTick(ref, mapState(p.status()), ref + ": " + p.status(), false);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new BranchTick(ref, TrayUi.State.ERROR, ref + ": прервано", true);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "Ошибка опроса " + ref + ": " + e.getMessage());
+            return new BranchTick(ref, TrayUi.State.ERROR, ref + ": ошибка", true);
+        }
+    }
+
     private void handleChange(String ref, BranchState prev, PipelineInfo p) {
         boolean firstObservation = prev == null;
         boolean idChanged = !firstObservation && prev.lastId() != p.id();
@@ -94,9 +127,7 @@ public final class PipelineWatcher implements AutoCloseable {
         states.put(ref, new BranchState(p.id(), p.status(), p.etag()));
         ui.setLastPipeline(p.webUrl());
 
-        if (firstObservation) {
-            return;
-        }
+        if (firstObservation) return;
         if (!idChanged && !statusChanged) return;
 
         if (p.isSuccess()) {
@@ -125,10 +156,6 @@ public final class PipelineWatcher implements AutoCloseable {
         };
     }
 
-    private static TrayUi.State worse(TrayUi.State a, TrayUi.State b) {
-        return rank(b) > rank(a) ? b : a;
-    }
-
     private static int rank(TrayUi.State s) {
         return switch (s) {
             case OK      -> 0;
@@ -142,6 +169,7 @@ public final class PipelineWatcher implements AutoCloseable {
 
     @Override
     public void close() {
-        exec.shutdownNow();
+        scheduler.shutdownNow();
+        branchPool.shutdownNow();
     }
 }

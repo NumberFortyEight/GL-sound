@@ -9,6 +9,7 @@ import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -17,6 +18,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.geom.Arc2D;
 import java.awt.geom.Rectangle2D;
+import java.util.Arrays;
 
 public final class VolumeKnob extends JComponent {
 
@@ -53,7 +55,7 @@ public final class VolumeKnob extends JComponent {
         setFocusable(true);
         setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
-        var handler = new MouseAdapter() {
+        MouseAdapter handler = new MouseAdapter() {
             @Override public void mousePressed(MouseEvent e) { requestFocusInWindow(); updateFromPoint(e); }
             @Override public void mouseDragged(MouseEvent e) { updateFromPoint(e); }
             @Override public void mouseWheelMoved(MouseWheelEvent e) {
@@ -69,19 +71,15 @@ public final class VolumeKnob extends JComponent {
 
     public void setValue(int v) {
         int c = clamp(v);
-        if (c != value) {
-            value = c;
-            repaint();
-            fireChange();
-        }
+        if (c == value) return;
+        value = c;
+        repaint();
+        ChangeEvent event = new ChangeEvent(this);
+        Arrays.stream(listeners.getListeners(ChangeListener.class))
+                .forEach(l -> l.stateChanged(event));
     }
 
     public void addChangeListener(ChangeListener l) { listeners.add(ChangeListener.class, l); }
-
-    private void fireChange() {
-        var e = new ChangeEvent(this);
-        for (var l : listeners.getListeners(ChangeListener.class)) l.stateChanged(e);
-    }
 
     private static int clamp(int v) { return Math.max(MIN, Math.min(MAX, v)); }
 
@@ -92,11 +90,13 @@ public final class VolumeKnob extends JComponent {
         double phase = ((START_DEG - thetaDeg) % 360.0 + 360.0) % 360.0;
         if (phase <= SWEEP_DEG) {
             setValue((int) Math.round(phase / SWEEP_DEG * 100.0));
-        } else if (phase < SWEEP_DEG + GAP_MID) {
-            setValue(100);
-        } else {
-            setValue(0);
+            return;
         }
+        if (phase < SWEEP_DEG + GAP_MID) {
+            setValue(100);
+            return;
+        }
+        setValue(0);
     }
 
     private static Color colorFor(int v) {
@@ -104,12 +104,13 @@ public final class VolumeKnob extends JComponent {
         int lo = (int) Math.floor(pos);
         int hi = Math.min(STOPS.length - 1, lo + 1);
         double t = pos - lo;
-        var a = STOPS[lo];
-        var b = STOPS[hi];
-        int r = (int) (a.getRed()   + (b.getRed()   - a.getRed())   * t);
-        int g = (int) (a.getGreen() + (b.getGreen() - a.getGreen()) * t);
-        int bl = (int) (a.getBlue()  + (b.getBlue()  - a.getBlue())  * t);
-        return new Color(r, g, bl);
+        Color a = STOPS[lo];
+        Color b = STOPS[hi];
+        return new Color(
+                (int) (a.getRed()   + (b.getRed()   - a.getRed())   * t),
+                (int) (a.getGreen() + (b.getGreen() - a.getGreen()) * t),
+                (int) (a.getBlue()  + (b.getBlue()  - a.getBlue())  * t)
+        );
     }
 
     @Override
@@ -123,7 +124,7 @@ public final class VolumeKnob extends JComponent {
 
     @Override
     protected void paintComponent(Graphics g) {
-        var g2 = (Graphics2D) g.create();
+        Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
@@ -133,26 +134,22 @@ public final class VolumeKnob extends JComponent {
         int cx = w / 2;
         int cy = h / 2;
         int r = diameter / 2;
-        var arcRect = new Rectangle2D.Double(cx - r, cy - r, diameter, diameter);
+        Rectangle2D.Double arcRect = new Rectangle2D.Double(cx - r, cy - r, diameter, diameter);
 
         g2.setStroke(new BasicStroke(7f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
         g2.setColor(TRACK_COLOR);
         g2.draw(new Arc2D.Double(arcRect, START_DEG, -SWEEP_DEG, Arc2D.OPEN));
 
         if (value > 0) {
-            double sweep = -SWEEP_DEG * (value / 100.0);
             g2.setColor(colorFor(value));
-            g2.draw(new Arc2D.Double(arcRect, START_DEG, sweep, Arc2D.OPEN));
+            g2.draw(new Arc2D.Double(arcRect, START_DEG, -SWEEP_DEG * (value / 100.0), Arc2D.OPEN));
         }
 
-        var font = getFont().deriveFont(Font.PLAIN, r * 0.55f);
-        g2.setFont(font);
+        g2.setFont(getFont().deriveFont(Font.PLAIN, r * 0.55f));
         g2.setColor(TEXT);
-        var fm = g2.getFontMetrics();
-        String s = value + "%";
-        int tx = cx - fm.stringWidth(s) / 2;
-        int ty = cy + (fm.getAscent() - fm.getDescent()) / 2;
-        g2.drawString(s, tx, ty);
+        FontMetrics fm = g2.getFontMetrics();
+        String s = "%d%%".formatted(value);
+        g2.drawString(s, cx - fm.stringWidth(s) / 2, cy + (fm.getAscent() - fm.getDescent()) / 2);
 
         g2.dispose();
     }

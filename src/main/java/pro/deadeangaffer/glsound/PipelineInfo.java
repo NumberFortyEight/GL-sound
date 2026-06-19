@@ -10,5 +10,6 @@ public record PipelineInfo(long id, String status, String ref, String webUrl, St
     }
 
     public boolean isSuccess() { return "success".equals(status); }
+
     public boolean isFailure() { return "failed".equals(status); }
 }

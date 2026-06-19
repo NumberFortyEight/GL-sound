@@ -13,8 +13,10 @@ import java.awt.TrayIcon;
 import java.awt.image.BufferedImage;
 import java.net.URI;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -31,21 +33,19 @@ public final class TrayUi {
     private Consumer<Boolean> pauseListener = p -> {};
     private Runnable settingsListener = () -> {};
 
-    public TrayUi(Path configFile, Supplier<String> pipelinesUrl) throws AWTException {
-        if (!SystemTray.isSupported()) {
-            throw new AWTException("SystemTray не поддерживается в этой системе");
-        }
-        for (var s : State.values()) icons.put(s, drawIcon(colorFor(s)));
+    public TrayUi(Path configFile, Supplier<Optional<String>> pipelinesUrl) throws AWTException {
+        if (!SystemTray.isSupported()) throw new AWTException("SystemTray не поддерживается в этой системе");
+        Arrays.stream(State.values()).forEach(s -> icons.put(s, drawIcon(colorFor(s))));
 
-        var menu = new PopupMenu();
+        PopupMenu menu = new PopupMenu();
 
         lastPipelineItem = new MenuItem("Открыть последний pipeline");
         lastPipelineItem.setEnabled(false);
-        lastPipelineItem.addActionListener(e -> openInBrowser(lastPipelineUrl));
+        lastPipelineItem.addActionListener(e -> Optional.ofNullable(lastPipelineUrl).ifPresent(TrayUi::openInBrowser));
         menu.add(lastPipelineItem);
 
-        var openProject = new MenuItem("Открыть проект (pipelines)");
-        openProject.addActionListener(e -> openInBrowser(pipelinesUrl.get()));
+        MenuItem openProject = new MenuItem("Открыть проект (pipelines)");
+        openProject.addActionListener(e -> pipelinesUrl.get().ifPresent(TrayUi::openInBrowser));
         menu.add(openProject);
 
         menu.addSeparator();
@@ -54,17 +54,17 @@ public final class TrayUi {
         pauseItem.addActionListener(e -> togglePause());
         menu.add(pauseItem);
 
-        var settingsItem = new MenuItem("Настройки...");
+        MenuItem settingsItem = new MenuItem("Настройки...");
         settingsItem.addActionListener(e -> settingsListener.run());
         menu.add(settingsItem);
 
-        var openConfig = new MenuItem("Открыть файл конфига");
+        MenuItem openConfig = new MenuItem("Открыть файл конфига");
         openConfig.addActionListener(e -> openInBrowser(configFile.toUri().toString()));
         menu.add(openConfig);
 
         menu.addSeparator();
 
-        var exitItem = new MenuItem("Выход");
+        MenuItem exitItem = new MenuItem("Выход");
         exitItem.addActionListener(e -> {
             SystemTray.getSystemTray().remove(trayIcon);
             System.exit(0);
@@ -77,12 +77,13 @@ public final class TrayUi {
     }
 
     public void onPauseToggle(Consumer<Boolean> listener) { this.pauseListener = listener; }
+
     public void onOpenSettings(Runnable listener) { this.settingsListener = listener; }
 
     public void setState(State s, String tooltip) {
         runOnEdt(() -> {
             trayIcon.setImage(icons.get(s));
-            trayIcon.setToolTip("GL-Sound: " + tooltip);
+            trayIcon.setToolTip("GL-Sound: %s".formatted(tooltip));
         });
     }
 
@@ -107,25 +108,25 @@ public final class TrayUi {
     private static void runOnEdt(Runnable r) {
         if (EventQueue.isDispatchThread()) {
             r.run();
-        } else {
-            EventQueue.invokeLater(r);
+            return;
         }
+        EventQueue.invokeLater(r);
     }
 
     private static Color colorFor(State s) {
         return switch (s) {
-            case IDLE    -> new Color(0x9aa0a6);
-            case OK      -> new Color(0x2e7d32);
-            case FAIL    -> new Color(0xc62828);
+            case IDLE -> new Color(0x9aa0a6);
+            case OK -> new Color(0x2e7d32);
+            case FAIL -> new Color(0xc62828);
             case RUNNING -> new Color(0x1565c0);
-            case ERROR   -> new Color(0xef6c00);
-            case PAUSED  -> new Color(0x616161);
+            case ERROR -> new Color(0xef6c00);
+            case PAUSED -> new Color(0x616161);
         };
     }
 
     private static BufferedImage drawIcon(Color color) {
         int size = 32;
-        var img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setColor(color);
@@ -138,10 +139,9 @@ public final class TrayUi {
 
     private static void openInBrowser(String url) {
         if (url == null || url.isBlank()) return;
+        if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) return;
         try {
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(URI.create(url));
-            }
+            Desktop.getDesktop().browse(URI.create(url));
         } catch (Exception ignored) {
         }
     }

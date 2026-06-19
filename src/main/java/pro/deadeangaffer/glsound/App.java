@@ -4,7 +4,9 @@ import java.awt.TrayIcon;
 import java.io.IOException;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.logging.FileHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -22,17 +24,14 @@ public final class App {
 
     public static void main(String[] args) throws Exception {
         configureLogging();
-
         http = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
-
         cfg = new Config(Config.defaultPath());
         cfg.loadOrCreate();
         SOUND.setVolumePercent(cfg.volumePercent());
-
         ui = new TrayUi(cfg.file(), App::pipelinesUrl);
         ui.onOpenSettings(() -> SettingsDialog.open(cfg, http, App::onConfigApplied));
         SplashOverlay.show("GL-Sound запущен — иконка в трее");
@@ -40,38 +39,31 @@ public final class App {
         ui.notify("GL-Sound запущен",
                 "Иконка добавлена в системный трей. Правый клик — меню.",
                 TrayIcon.MessageType.INFO);
-
         startWatcherFromConfig();
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            var w = watcher;
-            if (w != null) w.close();
-            if (http != null) http.close();
-        }, "shutdown"));
-
+        Runtime.getRuntime().addShutdownHook(new Thread(App::onShutdown, "shutdown"));
         Thread.currentThread().join();
+    }
+
+    private static void onShutdown() {
+        Optional.ofNullable(watcher).ifPresent(PipelineWatcher::close);
+        Optional.ofNullable(http).ifPresent(HttpClient::close);
     }
 
     private static void onConfigApplied() {
         startWatcherFromConfig();
     }
 
-    private static String pipelinesUrl() {
-        var base = cfg.baseUrl();
-        var path = cfg.projectPath();
-        if (base.isBlank() || path.isBlank()) return null;
-        return base + "/" + path + "/-/pipelines";
+    private static Optional<String> pipelinesUrl() {
+        String base = cfg.baseUrl();
+        String path = cfg.projectPath();
+        if (base.isBlank() || path.isBlank()) return Optional.empty();
+        return Optional.of("%s/%s/-/pipelines".formatted(base, path));
     }
 
     private static synchronized void startWatcherFromConfig() {
         SOUND.setVolumePercent(cfg.volumePercent());
-
-        var old = watcher;
-        if (old != null) {
-            old.close();
-            watcher = null;
-        }
-
+        Optional.ofNullable(watcher).ifPresent(PipelineWatcher::close);
+        watcher = null;
         if (cfg.token().isBlank()) {
             ui.setState(TrayUi.State.ERROR, "нет токена в конфиге");
             ui.notify("GL-Sound: настройка",
@@ -79,34 +71,28 @@ public final class App {
                     TrayIcon.MessageType.WARNING);
             return;
         }
-
-        var client = new GitLabClient(http, cfg.baseUrl(), cfg.projectPath(), cfg.token());
-        var fresh  = new PipelineWatcher(client, cfg.refs(), cfg.intervalSeconds(), SOUND, ui);
-
+        GitLabClient client = new GitLabClient(http, cfg.baseUrl(), cfg.projectPath(), cfg.token());
+        PipelineWatcher fresh = new PipelineWatcher(client, cfg.refs(), cfg.intervalSeconds(), SOUND, ui);
         ui.onPauseToggle(fresh::setPaused);
-        ui.setState(TrayUi.State.IDLE, "опрос " + cfg.intervalSeconds() + "с");
+        ui.setState(TrayUi.State.IDLE, "опрос %dс".formatted(cfg.intervalSeconds()));
         ui.notify("Мониторинг настроен",
-                "%s — каждые %dс, ветки: %s".formatted(
-                        cfg.projectPath(),
-                        cfg.intervalSeconds(),
-                        String.join(", ", cfg.refs())),
+                "%s — каждые %dс, ветки: %s".formatted(cfg.projectPath(), cfg.intervalSeconds(), String.join(", ", cfg.refs())),
                 TrayIcon.MessageType.INFO);
-
         fresh.start();
         watcher = fresh;
     }
 
     private static void configureLogging() {
         try {
-            var dir = Config.defaultPath().getParent();
+            Path dir = Config.defaultPath().getParent();
             Files.createDirectories(dir);
-            var fh = new FileHandler(dir.resolve("gl-sound.log").toString(), 1_000_000, 3, true);
+            FileHandler fh = new FileHandler(dir.resolve("gl-sound.log").toString(), 1_000_000, 3, true);
             fh.setFormatter(new SimpleFormatter());
             Logger root = Logger.getLogger("");
             root.addHandler(fh);
             root.setLevel(Level.INFO);
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "Не удалось настроить файловый лог: " + e.getMessage());
+            LOG.log(Level.WARNING, "Не удалось настроить файловый лог: %s".formatted(e.getMessage()));
         }
     }
 }

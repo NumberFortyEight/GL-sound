@@ -29,27 +29,32 @@ import java.awt.Font;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 public final class SettingsDialog extends JFrame {
 
-    private static final Pattern PROJECT_PATH_RX =
-            Pattern.compile("^[A-Za-z0-9._][A-Za-z0-9._\\-/]{0,254}$");
+    private static final Pattern PROJECT_PATH_RX = Pattern.compile("^[A-Za-z0-9._][A-Za-z0-9._\\-/]{0,254}$");
+    private static final Color MUTED = new Color(0x666666);
+    private static final Color OK_GREEN = new Color(0x2e7d32);
+    private static final Color ERR_RED = new Color(0xc62828);
 
     private final Config cfg;
     private final HttpClient http;
     private final Runnable onApply;
 
-    private final JTextField baseUrlField   = new JTextField();
-    private final JTextField projectField   = new JTextField();
-    private final JTextField refsField      = new JTextField();
-    private final JSpinner   intervalSpin   = new JSpinner(new SpinnerNumberModel(6, 2, 3600, 1));
-    private final VolumeKnob volumeKnob     = new VolumeKnob(70);
+    private final JTextField baseUrlField = new JTextField();
+    private final JTextField projectField = new JTextField();
+    private final JTextField refsField = new JTextField();
+    private final JSpinner intervalSpin = new JSpinner(new SpinnerNumberModel(6, 2, 3600, 1));
+    private final VolumeKnob volumeKnob = new VolumeKnob(70);
     private final JPasswordField tokenField = new JPasswordField();
-    private final JCheckBox  showToken      = new JCheckBox("Показать токен");
+    private final JCheckBox showToken = new JCheckBox("Показать токен");
 
-    private final JLabel testStatus    = mutedLabel("не проверено");
-    private final JLabel autostartLbl  = mutedLabel("…");
+    private final JLabel testStatus = mutedLabel("не проверено");
+    private final JLabel autostartLbl = mutedLabel("…");
     private final JButton autostartBtn = new JButton("…");
 
     public SettingsDialog(Config cfg, HttpClient http, Runnable onApply) {
@@ -57,96 +62,33 @@ public final class SettingsDialog extends JFrame {
         this.cfg = cfg;
         this.http = http;
         this.onApply = onApply;
-        try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); }
-        catch (Exception ignored) {}
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception ignored) {
+        }
 
         setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         setLayout(new BorderLayout());
 
-        var content = new JPanel();
+        JPanel content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
-
         content.add(section("GitLab base URL", baseUrlField, null));
-
         content.add(section("Путь к проекту", projectField, null));
-
         content.add(section("Ветки для мониторинга", refsField, "Через запятую."));
-
-        var intervalRow = new JPanel();
-        intervalRow.setLayout(new BoxLayout(intervalRow, BoxLayout.X_AXIS));
-        intervalRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        intervalRow.add(new JLabel("Интервал опроса (сек): "));
-        intervalSpin.setMaximumSize(new Dimension(80, 26));
-        intervalRow.add(intervalSpin);
-        intervalRow.add(Box.createHorizontalGlue());
-        content.add(wrapHint(intervalRow, "Минимум 2 секунды."));
-
-        var tokenPanel = new JPanel();
-        tokenPanel.setLayout(new BoxLayout(tokenPanel, BoxLayout.Y_AXIS));
-        tokenPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        tokenField.setEchoChar('•');
-        tokenField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
-        tokenPanel.add(tokenField);
-        var tokenControls = new JPanel();
-        tokenControls.setLayout(new BoxLayout(tokenControls, BoxLayout.X_AXIS));
-        tokenControls.setAlignmentX(Component.LEFT_ALIGNMENT);
-        var openTokenPage = new JButton("Открыть страницу создания токена");
-        openTokenPage.addActionListener(e -> openTokenPage());
-        showToken.addActionListener(e -> tokenField.setEchoChar(showToken.isSelected() ? (char) 0 : '•'));
-        tokenControls.add(openTokenPage);
-        tokenControls.add(Box.createRigidArea(new Dimension(8, 0)));
-        tokenControls.add(showToken);
-        tokenControls.add(Box.createHorizontalGlue());
-        tokenPanel.add(Box.createRigidArea(new Dimension(0, 6)));
-        tokenPanel.add(tokenControls);
-        content.add(section("Personal Access Token (PAT)",
-                tokenPanel,
-                "Где взять:<br>" +
-                "&nbsp;1. Нажми <b>Открыть страницу создания токена</b><br>" +
-                "&nbsp;2. <b>Token name</b> — любое<br>" +
-                "&nbsp;3. <b>Scopes</b> — ТОЛЬКО <b>read_api</b><br>" +
-                "&nbsp;4. Жми <b>Create</b>, скопируй токен (показывается один раз!) и вставь сюда.<br>" +
-                "Токен шифруется Windows DPAPI в %APPDATA%\\GL-Sound\\config.properties."));
-
-        var testRow = horizontalRow();
-        var testBtn = new JButton("Проверить подключение");
-        testBtn.addActionListener(e -> runTest(testBtn));
-        testRow.add(testBtn);
-        testRow.add(Box.createRigidArea(new Dimension(10, 0)));
-        testRow.add(testStatus);
-        testRow.add(Box.createHorizontalGlue());
+        content.add(wrapHint(intervalRow(), "Минимум 2 секунды."));
+        content.add(section("Personal Access Token (PAT)", tokenPanel(), tokenHintHtml()));
         content.add(Box.createRigidArea(new Dimension(0, 8)));
-        content.add(testRow);
-
-        var autoRow = horizontalRow();
-        autostartBtn.addActionListener(e -> toggleAutostart());
-        autoRow.add(new JLabel("Автозапуск при входе в Windows: "));
-        autoRow.add(autostartLbl);
-        autoRow.add(Box.createRigidArea(new Dimension(10, 0)));
-        autoRow.add(autostartBtn);
-        autoRow.add(Box.createHorizontalGlue());
+        content.add(testRow());
         content.add(Box.createRigidArea(new Dimension(0, 12)));
-        content.add(autoRow);
-
-        var knobSection = new JPanel();
-        knobSection.setLayout(new BoxLayout(knobSection, BoxLayout.Y_AXIS));
-        knobSection.setAlignmentX(Component.LEFT_ALIGNMENT);
-        var knobTitle = new JLabel("Громкость уведомлений");
-        knobTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
-        knobTitle.setFont(knobTitle.getFont().deriveFont(Font.BOLD));
-        knobSection.add(knobTitle);
-        knobSection.add(Box.createRigidArea(new Dimension(0, 6)));
-        volumeKnob.setAlignmentX(Component.CENTER_ALIGNMENT);
-        knobSection.add(volumeKnob);
-        content.add(knobSection);
-
+        content.add(autoRow());
+        content.add(knobSection());
         content.add(Box.createVerticalGlue());
 
-        var buttons = new JPanel(new BorderLayout());
-        var right = new JPanel();
-        var saveBtn = new JButton("Сохранить");
-        var cancelBtn = new JButton("Отмена");
+        JPanel buttons = new JPanel(new BorderLayout());
+        JPanel right = new JPanel();
+        JButton saveBtn = new JButton("Сохранить");
+        JButton cancelBtn = new JButton("Отмена");
         saveBtn.addActionListener(e -> save());
         cancelBtn.addActionListener(e -> dispose());
         right.add(saveBtn);
@@ -155,7 +97,7 @@ public final class SettingsDialog extends JFrame {
         buttons.setBorder(BorderFactory.createEmptyBorder(8, 14, 14, 14));
         getRootPane().setDefaultButton(saveBtn);
 
-        var scroll = new JScrollPane(content,
+        JScrollPane scroll = new JScrollPane(content,
                 ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.setBorder(null);
@@ -174,27 +116,97 @@ public final class SettingsDialog extends JFrame {
         setLocationRelativeTo(null);
     }
 
+    private JPanel intervalRow() {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.add(new JLabel("Интервал опроса (сек): "));
+        intervalSpin.setMaximumSize(new Dimension(80, 26));
+        row.add(intervalSpin);
+        row.add(Box.createHorizontalGlue());
+        return row;
+    }
+
+    private JPanel tokenPanel() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        tokenField.setEchoChar('•');
+        tokenField.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        panel.add(tokenField);
+        JPanel controls = new JPanel();
+        controls.setLayout(new BoxLayout(controls, BoxLayout.X_AXIS));
+        controls.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JButton openTokenPage = new JButton("Открыть страницу создания токена");
+        openTokenPage.addActionListener(e -> openTokenPage());
+        showToken.addActionListener(e -> tokenField.setEchoChar(showToken.isSelected() ? (char) 0 : '•'));
+        controls.add(openTokenPage);
+        controls.add(Box.createRigidArea(new Dimension(8, 0)));
+        controls.add(showToken);
+        controls.add(Box.createHorizontalGlue());
+        panel.add(Box.createRigidArea(new Dimension(0, 6)));
+        panel.add(controls);
+        return panel;
+    }
+
+    private static String tokenHintHtml() {
+        return """
+                Где взять:<br>
+                &nbsp;1. Нажми <b>Открыть страницу создания токена</b><br>
+                &nbsp;2. <b>Token name</b> — любое<br>
+                &nbsp;3. <b>Scopes</b> — ТОЛЬКО <b>read_api</b><br>
+                &nbsp;4. Жми <b>Create</b>, скопируй токен (показывается один раз!) и вставь сюда.<br>
+                Токен шифруется Windows DPAPI в %APPDATA%\\GL-Sound\\config.properties.""";
+    }
+
+    private JPanel testRow() {
+        JPanel row = horizontalRow();
+        JButton testBtn = new JButton("Проверить подключение");
+        testBtn.addActionListener(e -> runTest(testBtn));
+        row.add(testBtn);
+        row.add(Box.createRigidArea(new Dimension(10, 0)));
+        row.add(testStatus);
+        row.add(Box.createHorizontalGlue());
+        return row;
+    }
+
+    private JPanel autoRow() {
+        JPanel row = horizontalRow();
+        autostartBtn.addActionListener(e -> toggleAutostart());
+        row.add(new JLabel("Автозапуск при входе в Windows: "));
+        row.add(autostartLbl);
+        row.add(Box.createRigidArea(new Dimension(10, 0)));
+        row.add(autostartBtn);
+        row.add(Box.createHorizontalGlue());
+        return row;
+    }
+
+    private JPanel knobSection() {
+        JPanel section = new JPanel();
+        section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
+        section.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel title = new JLabel("Громкость уведомлений");
+        title.setAlignmentX(Component.CENTER_ALIGNMENT);
+        title.setFont(title.getFont().deriveFont(Font.BOLD));
+        section.add(title);
+        section.add(Box.createRigidArea(new Dimension(0, 6)));
+        volumeKnob.setAlignmentX(Component.CENTER_ALIGNMENT);
+        section.add(volumeKnob);
+        return section;
+    }
+
     private void save() {
-        var baseUrl = baseUrlField.getText().trim().replaceAll("/+$", "");
-        var projectPath = projectField.getText().trim();
-        var token = sanitizeToken(tokenField.getPassword());
-        var refs = refsField.getText().trim();
-        var newInterval = (Integer) intervalSpin.getValue();
-        var newVolume = volumeKnob.getValue();
+        String baseUrl = baseUrlField.getText().trim().replaceAll("/+$", "");
+        String projectPath = projectField.getText().trim();
+        String token = sanitizeToken(tokenField.getPassword());
+        String refs = refsField.getText().trim();
+        int newInterval = (Integer) intervalSpin.getValue();
+        int newVolume = volumeKnob.getValue();
 
-        if (!baseUrl.isEmpty() && !baseUrl.toLowerCase().startsWith("https://")) {
-            int choice = JOptionPane.showConfirmDialog(this,
-                    "URL не использует HTTPS — токен будет уходить по открытому каналу.\n"
-                            + "Сохранить всё равно?",
-                    "Внимание: незащищённое соединение",
-                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
-            if (choice != JOptionPane.YES_OPTION) return;
-        }
-
+        if (!baseUrl.isEmpty() && !baseUrl.toLowerCase().startsWith("https://") && !confirmInsecureUrl()) return;
         if (!projectPath.isEmpty() && !PROJECT_PATH_RX.matcher(projectPath).matches()) {
             JOptionPane.showMessageDialog(this,
-                    "Путь к проекту содержит недопустимые символы.\n"
-                            + "Разрешены: латиница, цифры, точка, подчёркивание, дефис и слэш.",
+                    "Путь к проекту содержит недопустимые символы.\nРазрешены: латиница, цифры, точка, подчёркивание, дефис и слэш.",
                     "Некорректный путь", JOptionPane.ERROR_MESSAGE);
             return;
         }
@@ -204,7 +216,7 @@ public final class SettingsDialog extends JFrame {
             cfg.save();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this,
-                    "Не удалось сохранить конфиг:\n" + ex.getMessage(),
+                    "Не удалось сохранить конфиг:\n%s".formatted(ex.getMessage()),
                     "Ошибка", JOptionPane.ERROR_MESSAGE);
             return;
         }
@@ -212,43 +224,54 @@ public final class SettingsDialog extends JFrame {
         dispose();
     }
 
+    private boolean confirmInsecureUrl() {
+        int choice = JOptionPane.showConfirmDialog(this,
+                "URL не использует HTTPS — токен будет уходить по открытому каналу.\nСохранить всё равно?",
+                "Внимание: незащищённое соединение",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        return choice == JOptionPane.YES_OPTION;
+    }
+
     private void runTest(JButton btn) {
-        var url = baseUrlField.getText().trim().replaceAll("/+$", "");
-        var path = projectField.getText().trim();
-        var token = sanitizeToken(tokenField.getPassword());
-        var refs = Arrays.stream(refsField.getText().split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+        String url = baseUrlField.getText().trim().replaceAll("/+$", "");
+        String path = projectField.getText().trim();
+        String token = sanitizeToken(tokenField.getPassword());
+        List<String> refs = Arrays.stream(refsField.getText().split(","))
+                .map(String::trim)
+                .filter(Predicate.not(String::isEmpty))
+                .toList();
 
         if (token.isEmpty()) { setStatusError("введи токен"); return; }
-        if (refs.isEmpty())  { setStatusError("введи хотя бы одну ветку"); return; }
+        if (refs.isEmpty()) { setStatusError("введи хотя бы одну ветку"); return; }
 
         btn.setEnabled(false);
         testStatus.setText("проверяю...");
-        testStatus.setForeground(new Color(0x666666));
+        testStatus.setForeground(MUTED);
 
         new SwingWorker<String, Void>() {
-            @Override protected String doInBackground() {
+            @Override
+            protected String doInBackground() {
                 try {
-                    var c = new GitLabClient(http, url, path, token);
-                    var firstRef = refs.getFirst();
-                    var maybe = c.latestPipeline(firstRef, null);
-                    if (maybe.isEmpty()) {
-                        return "OK: подключение есть, но pipeline на ветке '" + firstRef + "' не найден";
-                    }
-                    var p = maybe.get();
-                    return "OK: #" + p.id() + " status=" + p.status() + " ref=" + p.ref();
+                    GitLabClient c = new GitLabClient(http, url, path, token);
+                    String firstRef = refs.getFirst();
+                    Optional<PipelineInfo> maybe = c.latestPipeline(firstRef, null);
+                    if (maybe.isEmpty()) return "OK: подключение есть, но pipeline на ветке '%s' не найден".formatted(firstRef);
+                    PipelineInfo p = maybe.get();
+                    return "OK: #%d status=%s ref=%s".formatted(p.id(), p.status(), p.ref());
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return "Ошибка: проверка прервана";
                 } catch (Exception ex) {
-                    return "Ошибка: " + ex.getMessage();
+                    return "Ошибка: %s".formatted(ex.getMessage());
                 }
             }
-            @Override protected void done() {
+
+            @Override
+            protected void done() {
                 try {
-                    var msg = get();
+                    String msg = get();
                     testStatus.setText(msg);
-                    testStatus.setForeground(msg.startsWith("OK") ? new Color(0x2e7d32) : new Color(0xc62828));
+                    testStatus.setForeground(msg.startsWith("OK") ? OK_GREEN : ERR_RED);
                 } catch (Exception ignored) {
                 } finally {
                     btn.setEnabled(true);
@@ -258,37 +281,41 @@ public final class SettingsDialog extends JFrame {
     }
 
     private void openTokenPage() {
-        var url = baseUrlField.getText().trim().replaceAll("/+$", "")
-                + "/-/user_settings/personal_access_tokens";
-        try {
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(URI.create(url));
-            }
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this,
-                    "Не удалось открыть браузер. Открой вручную:\n" + url,
-                    "Открой в браузере", JOptionPane.INFORMATION_MESSAGE);
+        String url = "%s/-/user_settings/personal_access_tokens".formatted(baseUrlField.getText().trim().replaceAll("/+$", ""));
+        if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+            showOpenManually(url);
+            return;
         }
+        try {
+            Desktop.getDesktop().browse(URI.create(url));
+        } catch (Exception ex) {
+            showOpenManually(url);
+        }
+    }
+
+    private void showOpenManually(String url) {
+        JOptionPane.showMessageDialog(this,
+                "Не удалось открыть браузер. Открой вручную:\n%s".formatted(url),
+                "Открой в браузере", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void toggleAutostart() {
         autostartBtn.setEnabled(false);
         autostartLbl.setText("…");
-        autostartLbl.setForeground(new Color(0x666666));
+        autostartLbl.setForeground(MUTED);
 
         new SwingWorker<Boolean, Void>() {
             private Exception error;
 
-            @Override protected Boolean doInBackground() {
+            @Override
+            protected Boolean doInBackground() {
                 try {
-                    var installed = Autostart.isInstalled();
-                    if (installed) {
+                    if (Autostart.isInstalled()) {
                         Autostart.uninstall();
                         return false;
                     }
-                    var exe = Autostart.currentExecutable().orElseThrow(
-                            () -> new IllegalStateException("Не могу определить путь к exe текущего процесса"));
-                    Autostart.install(exe);
+                    Autostart.install(Autostart.currentExecutable()
+                            .orElseThrow(() -> new IllegalStateException("Не могу определить путь к exe текущего процесса")));
                     return true;
                 } catch (Exception ex) {
                     error = ex;
@@ -296,58 +323,55 @@ public final class SettingsDialog extends JFrame {
                 }
             }
 
-            @Override protected void done() {
-                try {
-                    if (error != null) {
+            @Override
+            protected void done() {
+                Optional.ofNullable(error).ifPresent(e ->
                         JOptionPane.showMessageDialog(SettingsDialog.this,
-                                "Не удалось изменить автозапуск:\n" + error.getMessage(),
-                                "Ошибка", JOptionPane.ERROR_MESSAGE);
-                    }
-                } finally {
-                    autostartBtn.setEnabled(true);
-                    refreshAutostart();
-                }
+                                "Не удалось изменить автозапуск:\n%s".formatted(e.getMessage()),
+                                "Ошибка", JOptionPane.ERROR_MESSAGE));
+                autostartBtn.setEnabled(true);
+                refreshAutostart();
             }
         }.execute();
     }
 
     private void refreshAutostart() {
         new SwingWorker<Boolean, Void>() {
-            @Override protected Boolean doInBackground() {
+            @Override
+            protected Boolean doInBackground() {
                 return Autostart.isInstalled();
             }
-            @Override protected void done() {
+
+            @Override
+            protected void done() {
                 try {
-                    var on = get();
-                    if (on) {
-                        autostartLbl.setText("включён");
-                        autostartLbl.setForeground(new Color(0x2e7d32));
-                        autostartBtn.setText("Выключить");
-                    } else {
-                        autostartLbl.setText("выключен");
-                        autostartLbl.setForeground(new Color(0x666666));
-                        autostartBtn.setText("Включить");
-                    }
+                    applyAutostartState(get());
                 } catch (Exception ignored) {
                 }
             }
         }.execute();
     }
 
+    private void applyAutostartState(boolean on) {
+        autostartLbl.setText(on ? "включён" : "выключен");
+        autostartLbl.setForeground(on ? OK_GREEN : MUTED);
+        autostartBtn.setText(on ? "Выключить" : "Включить");
+    }
+
     private void setStatusError(String msg) {
         testStatus.setText(msg);
-        testStatus.setForeground(new Color(0xc62828));
+        testStatus.setForeground(ERR_RED);
     }
 
     private static String sanitizeToken(char[] raw) {
         if (raw == null) return "";
-        var s = new String(raw).trim();
-        return s.replace("\r", "").replace("\n", "");
+        return new String(raw).trim().replace("\r", "").replace("\n", "");
     }
 
     private static JPanel horizontalRow() {
-        var p = new JPanel() {
-            @Override public Dimension getMaximumSize() {
+        JPanel p = new JPanel() {
+            @Override
+            public Dimension getMaximumSize() {
                 return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
             }
         };
@@ -357,8 +381,9 @@ public final class SettingsDialog extends JFrame {
     }
 
     private static JPanel verticalSection() {
-        var p = new JPanel() {
-            @Override public Dimension getMaximumSize() {
+        JPanel p = new JPanel() {
+            @Override
+            public Dimension getMaximumSize() {
                 return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
             }
         };
@@ -369,52 +394,51 @@ public final class SettingsDialog extends JFrame {
     }
 
     private static JPanel section(String title, JComponent input, String hintHtml) {
-        var p = verticalSection();
-
-        var titleLbl = new JLabel(title);
+        JPanel p = verticalSection();
+        JLabel titleLbl = new JLabel(title);
         titleLbl.setAlignmentX(Component.LEFT_ALIGNMENT);
         titleLbl.setFont(titleLbl.getFont().deriveFont(Font.BOLD));
         p.add(titleLbl);
         p.add(Box.createRigidArea(new Dimension(0, 4)));
-
         input.setAlignmentX(Component.LEFT_ALIGNMENT);
         if (input instanceof JTextField || input instanceof JPasswordField) {
             input.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
         }
         p.add(input);
-
-        if (hintHtml != null && !hintHtml.isBlank()) {
-            p.add(Box.createRigidArea(new Dimension(0, 4)));
-            var hint = htmlLabel(hintHtml);
-            hint.setAlignmentX(Component.LEFT_ALIGNMENT);
-            hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 11f));
-            hint.setForeground(new Color(0x666666));
-            p.add(hint);
-        }
+        Optional.ofNullable(hintHtml)
+                .filter(Predicate.not(String::isBlank))
+                .ifPresent(html -> {
+                    p.add(Box.createRigidArea(new Dimension(0, 4)));
+                    p.add(hintLabel(html));
+                });
         return p;
     }
 
     private static JPanel wrapHint(JComponent input, String hintHtml) {
-        var p = verticalSection();
+        JPanel p = verticalSection();
         input.setAlignmentX(Component.LEFT_ALIGNMENT);
         p.add(input);
         p.add(Box.createRigidArea(new Dimension(0, 4)));
-        var hint = htmlLabel(hintHtml);
-        hint.setAlignmentX(Component.LEFT_ALIGNMENT);
-        hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 11f));
-        hint.setForeground(new Color(0x666666));
-        p.add(hint);
+        p.add(hintLabel(hintHtml));
         return p;
     }
 
+    private static JLabel hintLabel(String html) {
+        JLabel hint = htmlLabel(html);
+        hint.setAlignmentX(Component.LEFT_ALIGNMENT);
+        hint.setFont(hint.getFont().deriveFont(Font.PLAIN, 11f));
+        hint.setForeground(MUTED);
+        return hint;
+    }
+
     private static JLabel mutedLabel(String text) {
-        var l = new JLabel(text);
-        l.setForeground(new Color(0x666666));
+        JLabel l = new JLabel(text);
+        l.setForeground(MUTED);
         return l;
     }
 
     private static JLabel htmlLabel(String html) {
-        return new JLabel("<html><body style='width:540px'>" + html + "</body></html>");
+        return new JLabel("<html><body style='width:540px'>%s</body></html>".formatted(html));
     }
 
     public static void open(Config cfg, HttpClient http, Runnable onApply) {
